@@ -99,6 +99,6 @@ if st.button("✨ 포스터 생성하기", type="primary"):
                     draw.text((50, height // 2 + 110), custom_desc, fill="black")
                     
                     st.success("포스터 생성 완료!")
-                    st.image(final_canvas, caption="완성된 최종 포스터", use_column_width=True)
+                    st.image(final_canvas, caption="완성된 최종 포스터", use_container_width=True)
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
