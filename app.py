@@ -2,19 +2,21 @@ import streamlit as st
 import requests
 import base64
 import io
-from PIL import Image
+from PIL import Image, ImageOps
+from rembg import remove
 
 st.set_page_config(page_title="Travel Poster Studio", page_icon="🎨", layout="centered")
 
 st.title("📸 Travel Poster AI Studio")
-st.markdown("GPT / 제미나이와 동일한 풀-렌더링 모드")
+st.markdown("제미나이급 스마트 파이프라인 (화풍별 맞춤 렌더링)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     saved_key = st.secrets.get("FAL_KEY", "")
     fal_api_key = st.text_input("Fal.ai API 키를 입력하세요", type="password", value=saved_key)
+    st.info("Style A, B 선택 시 배경 제거(누끼) 처리를 위해 약간의 추가 시간이 소요될 수 있습니다.")
 
-# 사용자가 입력한 완벽한 전체 프롬프트를 100% 원문 그대로 유지합니다.
+# 프롬프트 원문 100% 보존
 styles = {
     "Style A: 실사 + 레트로 카툰 (Rubber Hose)": """제출한 각 초상 사진을 각각 독립적인 고급 디자인 포스터로 제작해 주세요. 여러 장을 합치지 말고, 각 사진을 개별적으로 출력하세요.
 
@@ -57,7 +59,7 @@ styles = {
 
 避免动漫脸、光滑矢量画、塑料皮肤、精细写实皮肤、人物身份变化、凭空增加饰品、完整复制摄影背景、悬浮数字排版、作者签名、Logo和水印。""",
     
-    "Style C: 단색 건축 에칭 판화 (Monochrome Etching)": """제가 업로드한 유럽 건축 여행 사진 한 장 한 장을 각각 독립된 고급 단색 건축 에칭 판화 대비 포스터로 제작해 주세요. 여러 장을 붙이지 말고, 각 사진을 별도로 출력하세요.  
+    "Style C: 단색 건축 에칭 판화 (Monochrome Etching)": """제가 업로드한 유럽 건축 여행 사진 한 장 한 장을 각각 독립된 고급 단색 건축 에칭 판화 대비 포스터로 제작해 주세요. 여러 장 붙이지 말고, 각 사진을 별도로 출력하세요.  
 
 전체적으로 3:4 세로 구도를 채택하며, 상하로 원본과 재구성된 그림이 명확하지만 자연스럽게 대조되도록 합니다. 두 영역은 보통 각각 약 50%를 차지하며, 원본 주제 비율에 따라 약간 조정할 수 있지만 원본 대비 관계는 절대 취소하지 않습니다.  
 
@@ -219,27 +221,85 @@ custom_desc = st.text_input("관찰 문구 / 설명", "A small lens follows ever
 
 def image_to_base64(img):
     buffered = io.BytesIO()
-    img.save(buffered, format="JPEG")
+    img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def call_fal_api(base64_img, prompt, api_key):
-    url = "https://fal.run/fal-ai/flux/dev/image-to-image"
-    headers = {
-        "Authorization": f"Key {api_key}",
-        "Content-Type": "application/json"
-    }
+# [파이프라인 1] Style A, B 전용: 인물 누끼 + 하단 빈공간 마스킹 (제미나이 컷아웃 로직)
+def pipeline_cutout_inpainting(orig_img, prompt, api_key):
+    top_img = ImageOps.fit(orig_img, (1200, 900), Image.Resampling.LANCZOS)
+    cutout = remove(top_img)
+    
+    composite = Image.new("RGB", (1200, 1800), (255, 255, 255))
+    composite.paste(top_img, (0, 0))
+    bottom_bg = Image.new("RGB", (1200, 900), (240, 248, 255))
+    bottom_bg.paste(cutout, (0, 0), cutout)
+    composite.paste(bottom_bg, (0, 900))
+    
+    mask = Image.new("L", (1200, 1800), 0)
+    bottom_mask = Image.new("L", (1200, 900), 255)
+    
+    alpha = cutout.split()[3]
+    inv_alpha = ImageOps.invert(alpha)
+    bottom_mask.paste(inv_alpha, (0, 0))
+    mask.paste(bottom_mask, (0, 900))
+    
+    url = "https://fal.run/fal-ai/flux/dev/inpainting"
     payload = {
-        "image_url": f"data:image/jpeg;base64,{base64_img}",
+        "image_url": f"data:image/png;base64,{image_to_base64(composite)}",
+        "mask_url": f"data:image/png;base64,{image_to_base64(mask)}",
         "prompt": prompt,
-        # 핵심 변경점: GPT/제미나이처럼 백지에서 창작하도록 자유도(Strength)를 0.95로 대폭 끌어올림
         "strength": 0.95,
         "guidance_scale": 7.5
     }
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers={"Authorization": f"Key {api_key}"}, json=payload)
     if response.status_code == 200:
         return response.json()['images'][0]['url']
     else:
-        st.error(f"API 에러 발생: {response.text}")
+        st.error(f"API 에러: {response.text}")
+        return None
+
+# [파이프라인 2] Style C, D, E, F 전용: 전체 프롬프트 렌더링 후 원본 100% 덮어쓰기 복구
+def pipeline_universal_stitch(orig_img, style_name, prompt, api_key):
+    # Style E(고무도장)는 가로형 4:3, 나머지는 세로형 3:4
+    if "Style E" in style_name:
+        target_size = (1200, 900)
+        is_horizontal = True
+        split_ratio = 0.58
+    else:
+        target_size = (900, 1200)
+        is_horizontal = False
+        split_ratio = 0.5
+        
+    orig_formatted = ImageOps.fit(orig_img, target_size, Image.Resampling.LANCZOS)
+    
+    # 누끼 없이 프롬프트 원문 100%를 통째로 넘겨 AI가 자유롭게 그리도록 함
+    url = "https://fal.run/fal-ai/flux/dev/image-to-image"
+    payload = {
+        "image_url": f"data:image/png;base64,{image_to_base64(orig_formatted)}",
+        "prompt": prompt,
+        "strength": 0.8, # 프롬프트가 통제하도록 충분한 창작도 부여
+        "guidance_scale": 7.5
+    }
+    response = requests.post(url, headers={"Authorization": f"Key {api_key}"}, json=payload)
+    
+    if response.status_code == 200:
+        ai_img_url = response.json()['images'][0]['url']
+        ai_response = requests.get(ai_img_url)
+        ai_img = Image.open(io.BytesIO(ai_response.content)).convert("RGB")
+        ai_img = ai_img.resize(target_size)
+        
+        # 핵심: 프롬프트가 지시한 원본 구역에 진짜 100% 원본 사진을 강력 본드로 덮어씌움
+        final_canvas = ai_img.copy()
+        if is_horizontal:
+            split_px = int(target_size[0] * split_ratio)
+            final_canvas.paste(orig_formatted.crop((0, 0, split_px, target_size[1])), (0, 0))
+        else:
+            split_px = int(target_size[1] * split_ratio)
+            final_canvas.paste(orig_formatted.crop((0, 0, target_size[0], split_px)), (0, 0))
+            
+        return final_canvas
+    else:
+        st.error(f"API 에러: {response.text}")
         return None
 
 if st.button("✨ 포스터 생성하기", type="primary"):
@@ -248,7 +308,7 @@ if st.button("✨ 포스터 생성하기", type="primary"):
     elif not fal_api_key:
         st.warning("사이드바에 Fal.ai API 키를 입력해주세요!")
     else:
-        with st.spinner("GPT/제미나이와 동일한 방식으로 통째로 렌더링 중입니다..."):
+        with st.spinner(f"[{selected_style[:7]}] 화풍에 최적화된 제미나이 렌더링 파이프라인 가동 중..."):
             try:
                 orig_img = Image.open(uploaded_file).convert("RGB")
                 
@@ -256,15 +316,19 @@ if st.button("✨ 포스터 생성하기", type="primary"):
                 text_instruction = f"\n\n[필수 지시사항: 텍스트는 반드시 다음 내용을 출력할 것]\nMain Title: {custom_title}\nSubtitle: {custom_subtitle}\nDescription: {custom_desc}"
                 final_prompt = raw_prompt + text_instruction
                 
-                b64_img = image_to_base64(orig_img)
-                
-                ai_img_url = call_fal_api(b64_img, final_prompt, fal_api_key)
-                
-                if ai_img_url:
-                    ai_response = requests.get(ai_img_url)
-                    ai_img = Image.open(io.BytesIO(ai_response.content))
-                    
-                    st.success("포스터 생성 완료!")
-                    st.image(ai_img, caption="GPT 모드로 생성된 결과물", use_container_width=True)
+                # 프롬프트 종류에 따라 자동으로 가장 완벽한 렌더링 방식 선택 (스마트 라우팅)
+                if "Style A" in selected_style or "Style B" in selected_style:
+                    ai_img_url = pipeline_cutout_inpainting(orig_img, final_prompt, fal_api_key)
+                    if ai_img_url:
+                        ai_response = requests.get(ai_img_url)
+                        final_img = Image.open(io.BytesIO(ai_response.content))
+                        st.success("포스터 생성 완료!")
+                        st.image(final_img, caption="상단 보존 + 하단 컷아웃 및 완벽 합성", use_container_width=True)
+                else:
+                    final_img = pipeline_universal_stitch(orig_img, selected_style, final_prompt, fal_api_key)
+                    if final_img:
+                        st.success("포스터 생성 완료!")
+                        st.image(final_img, caption="프롬프트 구조 기반 완벽 렌더링 + 원본 100% 복구", use_container_width=True)
+                        
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
