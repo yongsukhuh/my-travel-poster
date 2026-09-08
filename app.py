@@ -13,7 +13,9 @@ st.markdown("여행 사진을 고품질 예술 포스터로 변환합니다. (Fa
 # 사이드바: API 키 설정
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
-    fal_api_key = st.text_input("Fal.ai API 키를 입력하세요", type="password")
+        # 비밀금고에서 키를 자동으로 가져오기
+    saved_key = st.secrets.get("FAL_KEY", "")
+    fal_api_key = st.text_input("Fal.ai API 키를 입력하세요", type="password", value=saved_key)
     st.markdown("[Fal.ai에서 API 키 발급받기](https://fal.ai/dashboard/keys)")
 
 # --- 2. 스타일 프롬프트 딕셔너리 ---
