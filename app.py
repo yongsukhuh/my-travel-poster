@@ -7,14 +7,14 @@ from PIL import Image
 st.set_page_config(page_title="Travel Poster Studio", page_icon="🎨", layout="centered")
 
 st.title("📸 Travel Poster AI Studio")
-st.markdown("사용자 완벽 원문 프롬프트 직결 모드")
+st.markdown("GPT / 제미나이와 동일한 풀-렌더링 모드")
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     saved_key = st.secrets.get("FAL_KEY", "")
     fal_api_key = st.text_input("Fal.ai API 키를 입력하세요", type="password", value=saved_key)
 
-# 사용자가 입력한 완벽한 전체 프롬프트를 단 한 글자도 바꾸지 않고 적용했습니다.
+# 사용자가 입력한 완벽한 전체 프롬프트를 100% 원문 그대로 유지합니다.
 styles = {
     "Style A: 실사 + 레트로 카툰 (Rubber Hose)": """제출한 각 초상 사진을 각각 독립적인 고급 디자인 포스터로 제작해 주세요. 여러 장을 합치지 말고, 각 사진을 개별적으로 출력하세요.
 
@@ -112,7 +112,7 @@ styles = {
 
 전체적으로 4:3 가로 구성으로 하되, 화면을 좌우 두 영역으로 나누세요. 하지만 명확한 구분선은 그리지 마세요.
 
-왼쪽은 화면의 약 58%를 차지하게 하고, 원본 사진을 충실히 보존하세요. 주체의 정체성, 지형, 건축물, 식물, 인물, 공간 관계, 자연광과 그림자, 실제 질감과 원래 색상 분위기를 정확히 유지하세요. 단, 절제된 예술 출판물 수준의 사진 톤 조정을 하고, 아주 미세한 섬세한 필름 입자를 추가하세요. 레이아웃에 맞추기 위해 자연스럽게 자를 수는 편집할 수 있지만, 주체를 늘리거나 왜곡하거나 이동하거나 교체하거나 다시 그려서는 안 돼요.
+왼쪽은 화면의 약 58%를 차지하게 하고, 원본 사진을 충실히 보존하세요. 주체의 정체성, 지형, 건축물, 식물, 인물, 공간 관계, 자연광과 그림자, 실제 질감과 원래 색상 분위기를 정확히 유지하세요. 단, 절제된 예술 출판물 수준의 사진 톤 조정을 하고, 아주 미세한 섬세한 필름 입자를 추가하세요. 레이아웃에 맞추기 위해 자연스럽게 자를 수는 있지만, 주체를 늘리거나 왜곡하거나 이동하거나 교체하거나 다시 그려서는 안 돼요.
 
 오른쪽은 화면의 약 42%를 차지하게 하고, 따뜻한 베이지색 오래된 종이를 배경으로 사용하세요. 종이는 미세한 섬유, 자연스러운 입자, 가벼운 사용 흔적, 무광 질감을 가지며, 대면적의 인쇄되지 않은 종이 여백을 남겨두어 여백이 레이아웃의 중요한 부분이 되게 하세요.
 
@@ -231,7 +231,8 @@ def call_fal_api(base64_img, prompt, api_key):
     payload = {
         "image_url": f"data:image/jpeg;base64,{base64_img}",
         "prompt": prompt,
-        "strength": 0.55, # 0.90에서 0.55로 조정하여 전체 화면이 파괴되는 현상 방지
+        # 핵심 변경점: GPT/제미나이처럼 백지에서 창작하도록 자유도(Strength)를 0.95로 대폭 끌어올림
+        "strength": 0.95,
         "guidance_scale": 7.5
     }
     response = requests.post(url, headers=headers, json=payload)
@@ -247,7 +248,7 @@ if st.button("✨ 포스터 생성하기", type="primary"):
     elif not fal_api_key:
         st.warning("사이드바에 Fal.ai API 키를 입력해주세요!")
     else:
-        with st.spinner("사용자의 100% 원문 프롬프트 전체를 수정 없이 AI에게 전달하고 있습니다..."):
+        with st.spinner("GPT/제미나이와 동일한 방식으로 통째로 렌더링 중입니다..."):
             try:
                 orig_img = Image.open(uploaded_file).convert("RGB")
                 
@@ -264,6 +265,6 @@ if st.button("✨ 포스터 생성하기", type="primary"):
                     ai_img = Image.open(io.BytesIO(ai_response.content))
                     
                     st.success("포스터 생성 완료!")
-                    st.image(ai_img, caption="사용자 원문 프롬프트를 100% 그대로 적용한 결과물", use_container_width=True)
+                    st.image(ai_img, caption="GPT 모드로 생성된 결과물", use_container_width=True)
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
